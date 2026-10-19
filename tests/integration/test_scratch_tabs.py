@@ -300,5 +300,23 @@ def scenario(d):
         self.assertEqual([(t["title"], t["untitled"]) for t in tabs], [("x.txt", False)])
 
 
+class CrashTest(SandboxTest):
+    def test_m8_note_survives_kill(self):
+        self.sb.run('''
+import os, signal
+def scenario(d):
+    tab = d.new_tab("crash")
+    yield 3000
+    d.type(tab, " more")
+    yield 500
+    os.kill(os.getpid(), signal.SIGKILL)
+    yield 100
+''')
+        tabs = last(self.run_xed(LOG_TABS), "tabs")["tabs"]
+        texts = [t["text"] for t in tabs]
+        self.assertEqual(len(texts), 1)
+        self.assertIn(texts[0], ("crash", "crash more"))
+
+
 if __name__ == "__main__":
     unittest.main()

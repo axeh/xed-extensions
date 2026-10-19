@@ -15,3 +15,4 @@ folder is `~/.local/share/xed/scratch/`.
 | M6b | Close All (Ctrl+Shift+W) with scratch tabs, "Close without saving" | Notes deleted | `test_close_all_discards_scratch` |
 | M9 | Two windows (Documents → Move to New Window), each with a note; close the second | No prompt; its note stays on disk; both come back after restart. Moving a tab between windows keeps a single note | `test_m9_closing_one_window_keeps_its_notes`, `test_moving_tab_to_new_window_keeps_note` |
 | M7 | Scratch tab `x`: Ctrl+S then Cancel; then Ctrl+S and save as `x.txt` | Cancel keeps the note; after saving, the hidden copy is gone at once, the tab is `x.txt`, and after restart only `x.txt` comes back (no duplicate) | `SaveAsTest.test_m7_*` |
+| M8 | Type `crash` into a scratch tab, wait 3 s, `pkill -9 xed`; restart | `crash` comes back; at most the last ~2 s of typing is lost; nothing corrupted | `CrashTest.test_m8_note_survives_kill` |
