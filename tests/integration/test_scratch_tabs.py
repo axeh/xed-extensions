@@ -134,5 +134,128 @@ def scenario(d):
         self.assertFalse(last(entries, "can_undo")["can_undo"])
 
 
+class CloseAndQuitTest(SandboxTest):
+    def assert_exited_without_prompt(self, entries):
+        self.assertNotIn("quit_dialog", [k for e in entries for k in e])
+
+    def test_m5_window_close_does_not_prompt_for_scratch(self):
+        entries = self.run_xed('def scenario(d):\n    d.new_tab("keep")\n    yield 300\n' + CLOSE_WINDOW)
+        self.assert_exited_without_prompt(entries)
+        self.assertEqual(list(self.notes()[0].values()), ["keep"])
+
+    def test_m5_ctrl_q_does_not_prompt_for_scratch(self):
+        entries = self.run_xed('''
+def scenario(d):
+    d.new_tab("keep")
+    yield 300
+    d.action("FileQuit")
+    yield 800
+    if d.dialog():
+        d.log(quit_dialog=True)
+        d.respond(Gtk.ResponseType.NO)
+    yield 500
+''')
+        self.assert_exited_without_prompt(entries)
+        self.assertEqual(list(self.notes()[0].values()), ["keep"])
+
+    def test_m5_cancelled_quit_keeps_scratch_looking_unsaved(self):
+        named = self.sb.root / "named.txt"
+        named.write_text("named\n")
+        entries = self.run_xed('''
+def scenario(d):
+    yield 500
+    [x for x in d.window.get_documents() if not x.is_untitled()][0].insert_at_cursor("edit ")
+    d.new_tab("")  # Restore Tabs closes the first new tab after launching with a file
+    d.new_tab("keep")
+    yield 300
+    d.action("FileQuit")
+    yield 800
+    d.log(prompted=[x.get_short_name_for_display() for x in d.window.get_unsaved_documents()],
+          dialog=d.dialog() is not None)
+    d.respond(Gtk.ResponseType.CANCEL)
+    yield 3000
+    d.log(tabs=d.tabs())
+''' + QUIT, args=[str(named)])
+        prompted = last(entries, "prompted")
+        self.assertTrue(prompted["dialog"])
+        self.assertEqual(prompted["prompted"], ["named.txt"])
+        scratch = [t for t in last(entries, "tabs")["tabs"] if t["untitled"]]
+        self.assertEqual([(t["text"], t["modified"]) for t in scratch], [("keep", True)])
+        self.assertEqual(list(self.notes()[0].values()), ["keep"])
+
+    def test_m6_closing_tab_with_text_prompts_then_discards(self):
+        entries = self.run_xed('''
+def scenario(d):
+    d.new_tab("bye")
+    yield 2600
+    d.close_tab(len(d.window.get_documents()) - 1)
+    yield 500
+    d.log(dialog=d.dialog() is not None)
+    d.respond(Gtk.ResponseType.NO)
+    yield 1500
+''' + QUIT)
+        self.assertTrue(last(entries, "dialog")["dialog"])
+        self.assertEqual(self.notes(), ({}, []))
+
+    def test_m6_closing_empty_tab_does_not_prompt(self):
+        entries = self.run_xed('''
+def scenario(d):
+    d.new_tab("")
+    yield 300
+    d.close_tab(len(d.window.get_documents()) - 1)
+    yield 500
+    d.log(dialog=d.dialog() is not None)
+''' + QUIT)
+        self.assertFalse(last(entries, "dialog")["dialog"])
+
+    def test_close_all_discards_scratch(self):
+        self.run_xed('''
+def scenario(d):
+    d.new_tab("a")
+    d.new_tab("b")
+    yield 2600
+    d.action("FileCloseAll")
+    yield 500
+    d.respond(Gtk.ResponseType.NO)
+    yield 1500
+''' + QUIT)
+        self.assertEqual(self.notes(), ({}, []))
+
+    def test_m9_closing_one_window_keeps_its_notes(self):
+        entries = self.run_xed('''
+def scenario(d):
+    d.new_tab("in-w1")
+    d.new_tab("in-w2")
+    yield 300
+    d.action("DocumentsMoveToNewWindow")
+    yield 2600
+    w2 = [w for w in d.windows() if w != d.window][0]
+    d.close_window(w2)
+    yield 1500
+    d.log(dialog=d.dialog() is not None, windows=len(d.windows()), w1=[t["text"] for t in d.tabs()])
+''' + CLOSE_WINDOW)
+        state = last(entries, "windows")
+        self.assertFalse(state["dialog"])
+        self.assertEqual(state["windows"], 1)
+        self.assertEqual(state["w1"], ["in-w1"])
+        self.assertEqual(sorted(self.notes()[0].values()), ["in-w1", "in-w2"])
+        tabs = last(self.run_xed(LOG_TABS), "tabs")["tabs"]
+        self.assertEqual(sorted(t["text"] for t in tabs), ["in-w1", "in-w2"])
+
+    def test_moving_tab_to_new_window_keeps_note(self):
+        entries = self.run_xed('''
+def scenario(d):
+    d.new_tab("stay")
+    d.new_tab("moved")
+    yield 2600
+    d.action("DocumentsMoveToNewWindow")
+    yield 1500
+    w2 = [w for w in d.windows() if w != d.window][0]
+    d.tab(0, w2).get_document().insert_at_cursor("!")
+    yield 2600
+''' + QUIT)
+        self.assertEqual(sorted(self.notes()[0].values()), ["moved!", "stay"])
+
+
 if __name__ == "__main__":
     unittest.main()

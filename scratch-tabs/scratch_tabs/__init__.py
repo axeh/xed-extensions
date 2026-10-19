@@ -1,7 +1,10 @@
 """Scratch Tabs: keep untitled xed tabs across restarts, like Notepad++.
 
 Every untitled tab's text is saved (debounced) to a hidden folder by
-``store.ScratchStore``. See docs/superpowers/specs/2026-10-19-scratch-tabs-design.md.
+``store.ScratchStore``. Quitting or closing a window keeps the notes and skips
+xed's "Save changes?" prompt for them; closing a single tab discards its note;
+saving it to a real file drops the hidden copy. See
+docs/superpowers/specs/2026-10-19-scratch-tabs-design.md.
 """
 
 import sys
@@ -17,15 +20,24 @@ from .store import ScratchStore, default_root  # noqa: E402
 SAVE_DELAY_MS = 2000
 RESTORE_POLL_MS = 100
 RESTORE_MAX_POLLS = 100
+DISCARD_DELAY_MS = 500
+CLOSE_POLL_MS = 200
 
 _STORE = ScratchStore(default_root())
 _RESTORED = False
 _INSTANCES = set()
 _QUIT_HOOK_INSTALLED = False
+# Note id of every scratch document, shared by all windows so a tab moved to
+# another window keeps its note.
+_NOTE_IDS = {}
 
 
 def _warn(msg):
     print(f"scratch-tabs: {msg}", file=sys.stderr)
+
+
+def _text(doc):
+    return doc.get_text(doc.get_start_iter(), doc.get_end_iter(), True)
 
 
 def _on_action_activate(action):
@@ -40,20 +52,19 @@ class ScratchTabsWindowActivatable(GObject.Object, Xed.WindowActivatable):
     window = GObject.Property(type=Xed.Window)
 
     def do_activate(self):
-        global _QUIT_HOOK_INSTALLED
-        self._ids = {}
+        global _QUIT_HOOK_INSTALLED, _RESTORED
         self._handlers = {}
         self._timers = {}
         self._closing = False
         self._window_handlers = [
             self.window.connect("tab-added", self._on_tab_added),
+            self.window.connect("tab-removed", self._on_tab_removed),
             self.window.connect("delete-event", self._on_delete_event),
         ]
         for doc in self.window.get_documents():
             if doc.is_untitled():
                 self._track(doc)
         _INSTANCES.add(self)
-        global _RESTORED
         if not _RESTORED:
             _RESTORED = True
             self._restore_polls = 0
@@ -64,7 +75,7 @@ class ScratchTabsWindowActivatable(GObject.Object, Xed.WindowActivatable):
 
     def do_deactivate(self):
         self._save_all()
-        for doc in list(self._ids):
+        for doc in list(self._handlers):
             self._untrack(doc)
         for handler in self._window_handlers:
             self.window.disconnect(handler)
@@ -73,34 +84,48 @@ class ScratchTabsWindowActivatable(GObject.Object, Xed.WindowActivatable):
     # --- tracking -------------------------------------------------------
 
     def _track(self, doc, note_id=None):
+        """Watch ``doc`` in this window; keeps its existing note id if it has one."""
         if note_id is None:
-            note_id = _STORE.new_id()
-        self._ids[doc] = note_id
-        self._handlers[doc] = [
-            doc.connect("changed", self._schedule_save),
-            doc.connect("loaded", self._on_loaded),
-        ]
+            note_id = _NOTE_IDS.get(doc) or _STORE.new_id()
+        _NOTE_IDS[doc] = note_id
+        if doc not in self._handlers:
+            self._handlers[doc] = [
+                doc.connect("changed", self._schedule_save),
+                doc.connect("loaded", self._on_loaded),
+                doc.connect("saved", self._on_saved),
+            ]
         return note_id
 
     def _untrack(self, doc):
+        """Stop watching ``doc`` in this window. The note itself is kept."""
         timer = self._timers.pop(doc, None)
         if timer is not None:
             GLib.source_remove(timer)
         for handler in self._handlers.pop(doc, []):
             doc.disconnect(handler)
-        return self._ids.pop(doc, None)
+        return _NOTE_IDS.get(doc)
+
+    def _forget(self, doc):
+        """Untrack ``doc`` and delete its note for good."""
+        self._untrack(doc)
+        note_id = _NOTE_IDS.pop(doc, None)
+        if note_id is not None:
+            _STORE.discard(note_id)
 
     def _on_tab_added(self, window, tab):
         doc = tab.get_document()
-        if doc.is_untitled() and doc not in self._ids:
+        if doc.is_untitled():
             self._track(doc)
 
     def _on_loaded(self, doc, *args):
         # A tab created to open a file starts out untitled until it loads.
         if not doc.is_untitled():
-            note_id = self._untrack(doc)
-            if note_id is not None:
-                _STORE.discard(note_id)
+            self._forget(doc)
+
+    def _on_saved(self, doc, *args):
+        # Save As succeeded: it is a real file now. A cancelled or failed save leaves it untitled.
+        if not doc.is_untitled():
+            self._forget(doc)
 
     # --- restoring ------------------------------------------------------
 
@@ -174,11 +199,9 @@ class ScratchTabsWindowActivatable(GObject.Object, Xed.WindowActivatable):
             if reuse is not None:
                 reuse = None
                 previous = None
-                stale = self._untrack(doc)
-                if stale is not None:
-                    _STORE.discard(stale)
-            else:
-                self._untrack(doc)
+            # Drop the throwaway id tab-added gave this blank tab; never stored.
+            self._untrack(doc)
+            _NOTE_IDS.pop(doc, None)
             doc.begin_not_undoable_action()
             doc.set_text(text, -1)
             doc.end_not_undoable_action()
@@ -203,14 +226,13 @@ class ScratchTabsWindowActivatable(GObject.Object, Xed.WindowActivatable):
         return False
 
     def _save_now(self, doc):
-        note_id = self._ids.get(doc)
+        note_id = _NOTE_IDS.get(doc)
         if note_id is None:
             return
         if not doc.is_untitled():
-            self._untrack(doc)
-            _STORE.discard(note_id)
+            self._forget(doc)
             return
-        text = doc.get_text(doc.get_start_iter(), doc.get_end_iter(), True)
+        text = _text(doc)
         try:
             if text:
                 _STORE.write(note_id, text)
@@ -220,7 +242,7 @@ class ScratchTabsWindowActivatable(GObject.Object, Xed.WindowActivatable):
             _warn(f"could not save note {note_id}: {e}")
 
     def _save_all(self):
-        for doc in list(self._ids):
+        for doc in list(self._handlers):
             timer = self._timers.pop(doc, None)
             if timer is not None:
                 GLib.source_remove(timer)
@@ -233,4 +255,59 @@ class ScratchTabsWindowActivatable(GObject.Object, Xed.WindowActivatable):
         return False
 
     def _on_closing(self):
+        """The window is about to close (window ×, Ctrl+Q): keep every note.
+
+        Runs before xed builds its "Save changes?" list. Marking scratch tabs
+        unmodified keeps them out of that list; if the close is cancelled they
+        are marked modified again.
+        """
+        if self._closing:
+            return
+        self._closing = True
         self._save_all()
+        for doc in self._handlers:
+            doc.set_modified(False)
+        GLib.timeout_add(CLOSE_POLL_MS, self._check_close_cancelled)
+
+    def _close_dialog_open(self):
+        return any(isinstance(w, Gtk.Dialog) and w.get_visible()
+                   and w.get_transient_for() == self.window
+                   for w in Gtk.Window.list_toplevels())
+
+    def _check_close_cancelled(self):
+        if self not in _INSTANCES:
+            return False
+        if self._close_dialog_open():
+            return True
+        # Dialog gone (or never shown) and the window is still here: close was cancelled.
+        self._closing = False
+        for doc in self._handlers:
+            if doc.get_char_count() > 0:
+                doc.set_modified(True)
+        return False
+
+    def _on_tab_removed(self, window, tab):
+        doc = tab.get_document()
+        if doc not in self._handlers:
+            return
+        self._untrack(doc)
+        if not self._closing:
+            GLib.timeout_add(DISCARD_DELAY_MS, self._discard_if_closed, doc)
+
+    def _discard_if_closed(self, doc):
+        """Delete the note of a tab the user closed, unless it really went elsewhere.
+
+        Delayed so that a tab moved to another window, a window being closed,
+        or the whole app quitting (even through a prompt we could not skip)
+        never loses its note.
+        """
+        app = Xed.App.get_default()
+        if (self._closing
+                or self not in _INSTANCES
+                or self.window not in app.get_main_windows()
+                or doc in app.get_documents()):
+            return False
+        note_id = _NOTE_IDS.pop(doc, None)
+        if note_id is not None:
+            _STORE.discard(note_id)
+        return False
