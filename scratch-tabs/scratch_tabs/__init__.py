@@ -30,6 +30,10 @@ _QUIT_HOOK_INSTALLED = False
 # Note id of every scratch document, shared by all windows so a tab moved to
 # another window keeps its note.
 _NOTE_IDS = {}
+# Documents the user asked to close (tab ×, Ctrl+W, Close All). Only these lose
+# their note when their tab goes away; tabs closed any other way (another
+# plugin, a window closing) keep it.
+_USER_CLOSING = set()
 
 
 def _warn(msg):
@@ -40,11 +44,39 @@ def _text(doc):
     return doc.get_text(doc.get_start_iter(), doc.get_end_iter(), True)
 
 
+def _owner(action):
+    """The plugin instance whose window this GtkAction belongs to."""
+    for instance in _INSTANCES:
+        for group in instance.window.get_ui_manager().get_action_groups():
+            if group.get_action(action.get_name()) == action:
+                return instance
+    return None
+
+
 def _on_action_activate(action):
     """Emission hook: runs before xed's own handler for every GtkAction."""
-    if action.get_name() == "FileQuit":
-        for instance in list(_INSTANCES):
-            instance._on_closing()
+    name = action.get_name()
+    if name not in ("FileQuit", "FileClose", "FileCloseAll"):
+        return True
+    instance = _owner(action)
+    if instance is None:
+        return True
+    if name == "FileQuit":
+        instance._on_closing()
+    elif name == "FileClose":
+        tab = instance.window.get_active_tab()
+        if tab is not None:
+            instance._mark_user_closing([tab.get_document()])
+    else:
+        instance._mark_user_closing(instance.window.get_documents())
+    return True
+
+
+def _on_tab_close_request(notebook, tab):
+    """Emission hook for a tab's own × button."""
+    for instance in _INSTANCES:
+        if tab.get_document() in instance._handlers:
+            instance._mark_user_closing([tab.get_document()])
     return True
 
 
@@ -71,6 +103,7 @@ class ScratchTabsWindowActivatable(GObject.Object, Xed.WindowActivatable):
             GLib.timeout_add(RESTORE_POLL_MS, self._restore_when_ready)
         if not _QUIT_HOOK_INSTALLED:
             GObject.add_emission_hook(Gtk.Action, "activate", _on_action_activate)
+            GObject.add_emission_hook(Xed.Notebook, "tab-close-request", _on_tab_close_request)
             _QUIT_HOOK_INSTALLED = True
 
     def do_deactivate(self):
@@ -118,9 +151,12 @@ class ScratchTabsWindowActivatable(GObject.Object, Xed.WindowActivatable):
             self._track(doc)
 
     def _on_loaded(self, doc, *args):
-        # A tab created to open a file starts out untitled until it loads.
+        # A tab created to open a file starts out untitled until it loads. If a
+        # file was loaded into a scratch tab, keep its stored note: it comes back
+        # next start rather than being lost.
         if not doc.is_untitled():
-            self._forget(doc)
+            self._untrack(doc)
+            _NOTE_IDS.pop(doc, None)
 
     def _on_saved(self, doc, *args):
         # Save As succeeded: it is a real file now. A cancelled or failed save leaves it untitled.
@@ -270,9 +306,27 @@ class ScratchTabsWindowActivatable(GObject.Object, Xed.WindowActivatable):
         GLib.timeout_add(CLOSE_POLL_MS, self._check_close_cancelled)
 
     def _close_dialog_open(self):
-        return any(isinstance(w, Gtk.Dialog) and w.get_visible()
+        """xed's own "Save changes?" dialog is showing for this window."""
+        return any(w.__gtype__.name == "XedCloseConfirmationDialog" and w.get_visible()
                    and w.get_transient_for() == self.window
                    for w in Gtk.Window.list_toplevels())
+
+    def _mark_user_closing(self, docs):
+        marked = [doc for doc in docs if doc in self._handlers]
+        _USER_CLOSING.update(marked)
+        if marked:
+            GLib.timeout_add(CLOSE_POLL_MS, self._clear_user_closing, marked)
+
+    def _clear_user_closing(self, docs):
+        """Once xed's prompt is gone, forget marks on tabs that were not closed (Cancel)."""
+        if self not in _INSTANCES:
+            _USER_CLOSING.difference_update(docs)
+            return False
+        if self._close_dialog_open():
+            return True
+        open_docs = self.window.get_documents()
+        _USER_CLOSING.difference_update(doc for doc in docs if doc in open_docs)
+        return False
 
     def _check_close_cancelled(self):
         if self not in _INSTANCES:
@@ -291,11 +345,13 @@ class ScratchTabsWindowActivatable(GObject.Object, Xed.WindowActivatable):
         if doc not in self._handlers:
             return
         self._untrack(doc)
-        if not self._closing:
-            GLib.timeout_add(DISCARD_DELAY_MS, self._discard_if_closed, doc)
+        if doc in _USER_CLOSING:
+            _USER_CLOSING.discard(doc)
+            if not self._closing:
+                GLib.timeout_add(DISCARD_DELAY_MS, self._discard_if_closed, doc)
 
     def _discard_if_closed(self, doc):
-        """Delete the note of a tab the user closed, unless it really went elsewhere.
+        """Delete the note of a tab the user closed, unless it went elsewhere after all.
 
         Delayed so that a tab moved to another window, a window being closed,
         or the whole app quitting (even through a prompt we could not skip)

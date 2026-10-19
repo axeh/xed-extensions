@@ -318,5 +318,73 @@ def scenario(d):
         self.assertIn(texts[0], ("crash", "crash more"))
 
 
+class ReviewRegressionTest(SandboxTest):
+    def test_tab_closed_by_another_plugin_keeps_note(self):
+        # Restore Tabs silently closes the first untitled tab arriving in a new window
+        # that already has a document; that is not the user discarding it.
+        self.run_xed('''
+def scenario(d):
+    d.new_tab("one")
+    d.new_tab("two")
+    d.new_tab("three")
+    yield 2600
+    d.action("DocumentsMoveToNewWindow")
+    yield 1500
+    w2 = [w for w in d.windows() if w != d.window][0]
+    nb = lambda w: Xed.Tab.get_from_document(w.get_documents()[0]).get_parent()
+    nb(d.window).move_tab(nb(w2), d.tab(len(d.window.get_documents()) - 1), -1)
+    yield 1500
+''' + QUIT)
+        self.assertEqual(sorted(self.notes()[0].values()), ["one", "three", "two"])
+
+    def test_cancelled_quit_with_other_dialog_open_keeps_tabs_unsaved(self):
+        named = self.sb.root / "named.txt"
+        named.write_text("named\n")
+        other = self.sb.root / "other.txt"
+        other.write_text("OTHER\n")
+        entries = self.run_xed('''
+def scenario(d):
+    from gi.repository import Gio
+    yield 500
+    [x for x in d.window.get_documents() if not x.is_untitled()][0].insert_at_cursor("edit ")
+    d.new_tab("")  # Restore Tabs closes the first new tab after launching with a file
+    d.new_tab("keep")
+    yield 2600
+    d.action("HelpAbout")
+    yield 300
+    d.action("FileQuit")
+    yield 800
+    dlg = [w for w in Gtk.Window.list_toplevels()
+           if w.__gtype__.name == "XedCloseConfirmationDialog" and w.get_visible()]
+    dlg[0].response(Gtk.ResponseType.CANCEL)
+    yield 1500
+    d.log(after_cancel=[t for t in d.tabs() if t["untitled"] and t["text"]])
+    scratch = [x for x in d.window.get_documents() if x.is_untitled() and x.get_char_count() > 0][0]
+    d.window.set_active_tab(Xed.Tab.get_from_document(scratch))
+    Xed.commands_load_location(d.window, Gio.File.new_for_path(OTHER), None, 0)
+    yield 1500
+    d.log(tabs=d.tabs())
+'''.replace("OTHER", repr(str(other))) + QUIT, args=[str(named)])
+        self.assertEqual([(t["text"], t["modified"]) for t in last(entries, "after_cancel")["after_cancel"]],
+                         [("keep", True)])
+        self.assertIn("keep", [t["text"] for t in last(entries, "tabs")["tabs"]])
+        self.assertEqual(list(self.notes()[0].values()), ["keep"])
+
+    def test_tab_close_button_discards(self):
+        entries = self.run_xed('''
+def scenario(d):
+    d.new_tab("bye")
+    yield 2600
+    tab = d.tab(len(d.window.get_documents()) - 1)
+    tab.get_parent().emit("tab-close-request", tab)  # what the tab's × button does
+    yield 500
+    d.log(dialog=d.dialog() is not None)
+    d.respond(Gtk.ResponseType.NO)
+    yield 1500
+''' + QUIT)
+        self.assertTrue(last(entries, "dialog")["dialog"])
+        self.assertEqual(self.notes(), ({}, []))
+
+
 if __name__ == "__main__":
     unittest.main()
