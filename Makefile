@@ -11,7 +11,7 @@ uninstall:
 	rm -f $(PLUGIN_DIR)/scratch-tabs.plugin $(PLUGIN_DIR)/scratch_tabs
 
 test:
-	PYTHONPATH=scratch-tabs/scratch_tabs python3 -m unittest discover -s tests -t . -p 'test_store.py'
+	PYTHONPATH=scratch-tabs/scratch_tabs python3 -m unittest discover -s tests -t tests -p 'test_store.py'
 
 # Headless end-to-end tests: real xed in an isolated sandbox (see tests/integration/xedsandbox.py)
 itest:
