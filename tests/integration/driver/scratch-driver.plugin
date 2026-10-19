@@ -1,0 +1,6 @@
+[Plugin]
+Loader=python3
+Module=scratch_driver
+IAge=3
+Name=Scratch Tabs test driver
+Description=Test-only: runs a scripted scenario inside xed (never install for real use)

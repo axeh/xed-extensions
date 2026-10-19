@@ -1,0 +1,8 @@
+[Plugin]
+Loader=python3
+Module=scratch_tabs
+IAge=3
+Name=Scratch Tabs
+Description=Keep untitled tabs across restarts, like Notepad++
+Authors=Alen Huskic <alen.huskic@codemine.hr>
+Copyright=Copyright © 2026 Alen Huskic
