@@ -259,5 +259,46 @@ def scenario(d):
         self.assertEqual(sorted(self.notes()[0].values()), ["moved!", "stay"])
 
 
+class SaveAsTest(SandboxTest):
+    SAVE_AS = '''
+def scenario(d):
+    d.new_tab("x")
+    yield 2600
+    d.action("FileSaveAs")
+    yield 800
+    d.log(chooser=type(d.dialog()).__name__)
+    if CANCEL:
+        d.respond(Gtk.ResponseType.CANCEL)
+    else:
+        d.dialog().set_current_folder(TARGET_DIR)
+        d.dialog().set_current_name("x.txt")
+        d.respond(Gtk.ResponseType.OK)
+    yield 1500
+    import os
+    folder = os.environ["XDG_DATA_HOME"] + "/xed/scratch"
+    d.log(tabs=d.tabs(), notes_after_save=sorted(f for f in os.listdir(folder) if f.endswith(".txt")))
+    yield 2600
+''' + CLOSE_WINDOW
+
+    def save_as(self, cancel):
+        scen = f"CANCEL = {cancel}\nTARGET_DIR = {str(self.sb.root)!r}\n" + self.SAVE_AS
+        return self.run_xed(scen)
+
+    def test_m7_cancelled_save_as_keeps_note(self):
+        self.save_as(cancel=True)
+        self.assertEqual(list(self.notes()[0].values()), ["x"])
+        self.assertFalse((self.sb.root / "x.txt").exists())
+
+    def test_m7_save_as_turns_note_into_file(self):
+        entries = self.save_as(cancel=False)
+        self.assertEqual((self.sb.root / "x.txt").read_text(), "x\n")
+        self.assertEqual([t["title"] for t in last(entries, "tabs")["tabs"]], ["x.txt"])
+        self.assertEqual(last(entries, "notes_after_save")["notes_after_save"], [],
+                         "hidden copy must go as soon as the file is saved")
+        self.assertEqual(self.notes(), ({}, []))
+        tabs = last(self.run_xed(LOG_TABS), "tabs")["tabs"]
+        self.assertEqual([(t["title"], t["untitled"]) for t in tabs], [("x.txt", False)])
+
+
 if __name__ == "__main__":
     unittest.main()
