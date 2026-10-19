@@ -69,5 +69,70 @@ def scenario(d):
         self.assertEqual(texts, {})
 
 
+# Window × (Restore Tabs only records its file list on delete-event).
+CLOSE_WINDOW = '''
+    d.close_window()
+    yield 800
+    if d.dialog():
+        d.log(quit_dialog=True)
+        d.respond(Gtk.ResponseType.NO)
+    yield 500
+'''
+
+LOG_TABS = '''
+def scenario(d):
+    yield 1500
+    d.log(tabs=d.tabs(), windows=len(d.windows()))
+''' + QUIT
+
+
+class RestoreTest(SandboxTest):
+    def first_session(self, named):
+        self.run_xed('''
+def scenario(d):
+    d.new_tab("one")
+    d.new_tab("two")
+    yield 300
+''' + CLOSE_WINDOW, args=[str(named)])
+
+    def test_m4_scratch_tabs_restored_after_saved_files(self):
+        named = self.sb.root / "named.txt"
+        named.write_text("named\n")
+        self.first_session(named)
+        tabs = last(self.run_xed(LOG_TABS), "tabs")["tabs"]
+        self.assertEqual([t["text"] for t in tabs], ["named", "one", "two"])
+        for t in tabs[1:]:
+            self.assertTrue(t["untitled"])
+            self.assertTrue(t["modified"], "restored scratch tab must look unsaved")
+        texts, order = self.notes()
+        self.assertEqual(len(order), 2)
+
+    def test_m4_no_extra_empty_tab_on_plain_start(self):
+        # Without Restore Tabs, xed opens an empty "Unsaved Document 1" at startup.
+        self.sb.cleanup()
+        self.sb = XedSandbox(plugins=("scratch_tabs", "scratch_driver"))
+        self.run_xed('def scenario(d):\n    d.window.get_documents()[0].insert_at_cursor("solo")\n    yield 2600\n' + QUIT)
+        tabs = last(self.run_xed(LOG_TABS), "tabs")["tabs"]
+        self.assertEqual([t["text"] for t in tabs], ["solo"])
+        self.assertTrue(tabs[0]["modified"])
+
+    def test_m4_restored_when_launched_with_a_file(self):
+        self.run_xed('def scenario(d):\n    d.new_tab("keep")\n    yield 2600\n' + QUIT)
+        other = self.sb.root / "other.txt"
+        other.write_text("other\n")
+        tabs = last(self.run_xed(LOG_TABS, args=[str(other)]), "tabs")["tabs"]
+        self.assertEqual([t["text"] for t in tabs], ["other", "keep"])
+
+    def test_m4_restored_text_is_not_undoable(self):
+        self.run_xed('def scenario(d):\n    d.new_tab("keep")\n    yield 2600\n' + QUIT)
+        entries = self.run_xed('''
+def scenario(d):
+    yield 1500
+    doc = [x for x in d.window.get_documents() if d.text(x) == "keep"][0]
+    d.log(can_undo=doc.can_undo())
+''' + QUIT)
+        self.assertFalse(last(entries, "can_undo")["can_undo"])
+
+
 if __name__ == "__main__":
     unittest.main()

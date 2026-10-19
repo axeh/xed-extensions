@@ -84,6 +84,8 @@ class XedSandbox:
             os.killpg(proc.pid, signal.SIGKILL)
             out, _ = proc.communicate()
             out += "\n[sandbox] TIMEOUT: xed killed\n"
+        else:
+            out += f"\n[sandbox] exit {proc.returncode}\n"
         finally:
             broadway.terminate()
             broadway.wait()

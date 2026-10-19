@@ -43,7 +43,13 @@ class Driver:
         return out
 
     def new_tab(self, text="", window=None):
-        tab = (window or self.window).create_tab(True)
+        # Like Ctrl+N (Xed.Window.create_tab is unsafe from Python in xed 3.8.9).
+        window = window or self.window
+        added = []
+        handler = window.connect("tab-added", lambda w, t: added.append(t))
+        self.action("FileNew", window)
+        window.disconnect(handler)
+        tab = added[0]
         if text:
             tab.get_document().insert_at_cursor(text)
         return tab
