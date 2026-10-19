@@ -90,6 +90,8 @@ class RestoreTest(SandboxTest):
     def first_session(self, named):
         self.run_xed('''
 def scenario(d):
+    yield 500
+    d.new_tab("")  # Restore Tabs closes the first new tab after launching with a file
     d.new_tab("one")
     d.new_tab("two")
     yield 300
