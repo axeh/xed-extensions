@@ -3,8 +3,7 @@
 Every untitled tab's text is saved (debounced) to a hidden folder by
 ``store.ScratchStore``. Quitting or closing a window keeps the notes and skips
 xed's "Save changes?" prompt for them; closing a single tab discards its note;
-saving it to a real file drops the hidden copy. See
-docs/superpowers/specs/2026-10-19-scratch-tabs-design.md.
+saving it to a real file drops the hidden copy. See README.md.
 """
 
 import sys

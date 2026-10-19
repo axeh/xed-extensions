@@ -1,4 +1,4 @@
-"""End-to-end checks (M1–M9 of docs/manual-test.md) against a real, sandboxed xed."""
+"""End-to-end checks against a real, sandboxed xed (see "Tests" in README.md)."""
 
 import json
 import unittest
